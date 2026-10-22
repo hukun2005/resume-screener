@@ -1,5 +1,10 @@
 """简历文件文本提取（A3：支持 PDF / Word）"""
 import io
+import re
+
+# 中国大陆手机号与邮箱正则（用于结构化抽取）
+_PHONE_RE = re.compile(r"1[3-9]\d{9}")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def extract_resume_text(content: bytes, filename: str) -> str:
@@ -25,3 +30,18 @@ def extract_resume_text(content: bytes, filename: str) -> str:
         return content.decode("utf-8").strip()
     except Exception:
         return ""
+
+
+def extract_contact(text: str) -> dict:
+    """从简历文本中抽取手机号与邮箱；姓名歧义较大，建议仍由人工填写。
+
+    返回 {"phone": str, "email": str}，未命中则为空字符串。
+    """
+    if not text:
+        return {"phone": "", "email": ""}
+    phone_m = _PHONE_RE.search(text)
+    email_m = _EMAIL_RE.search(text)
+    return {
+        "phone": phone_m.group(0) if phone_m else "",
+        "email": email_m.group(0) if email_m else "",
+    }

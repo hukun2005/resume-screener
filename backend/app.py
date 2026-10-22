@@ -8,8 +8,17 @@ from pydantic import BaseModel
 
 from agent import Agent
 from auth import login, verify_token
-from db import get_candidate, init_db, insert_candidate, list_candidates, list_recommendations
-from resume_parser import extract_resume_text
+from db import (
+    delete_candidate,
+    filter_candidates,
+    get_candidate,
+    init_db,
+    insert_candidate,
+    list_recommendations,
+    update_candidate,
+    update_candidate_status,
+)
+from resume_parser import extract_contact, extract_resume_text
 import vector_store
 
 # 启动时初始化数据库（建库建表 + 写入种子数据）
@@ -36,6 +45,20 @@ class LoginReq(BaseModel):
 
 class ChatReq(BaseModel):
     message: str
+
+
+class StatusReq(BaseModel):
+    status: str
+
+
+class CandidateUpdate(BaseModel):
+    name: str
+    expected_position: str = ""
+    skills: str = ""
+    experience: str = ""
+    education: str = ""
+    phone: str = ""
+    email: str = ""
 
 
 def current_user(authorization: str = Header(None)):
@@ -100,8 +123,19 @@ def chat_reset(username: str = Depends(current_user)):
 
 
 @app.get("/api/candidates")
-def api_candidates(username: str = Depends(current_user)):
-    return {"candidates": list_candidates()}
+def api_candidates(
+    position: str | None = None,
+    skills: str | None = None,
+    education: str | None = None,
+    min_years: int | None = None,
+    username: str = Depends(current_user),
+):
+    """候选人列表，支持按岗位/技能/学历/最低年限结构化筛选"""
+    return {
+        "candidates": filter_candidates(
+            position=position, skills=skills, education=education, min_years=min_years
+        )
+    }
 
 
 @app.get("/api/candidates/{cid}")
@@ -110,6 +144,48 @@ def api_candidate(cid: int, username: str = Depends(current_user)):
     if not c:
         raise HTTPException(status_code=404, detail="未找到该候选人")
     return {"candidate": c}
+
+
+@app.patch("/api/candidates/{cid}/status")
+def api_update_status(cid: int, req: StatusReq, username: str = Depends(current_user)):
+    """更新候选人招聘流程状态（new/screening/interview/offered/rejected）"""
+    c = get_candidate(cid)
+    if not c:
+        raise HTTPException(status_code=404, detail="未找到该候选人")
+    try:
+        update_candidate_status(cid, req.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"candidate": get_candidate(cid)}
+
+
+@app.put("/api/candidates/{cid}")
+def api_update_candidate(cid: int, req: CandidateUpdate, username: str = Depends(current_user)):
+    """编辑候选人结构化信息（姓名/岗位/技能/经历/学历/联系方式）"""
+    if not get_candidate(cid):
+        raise HTTPException(status_code=404, detail="未找到该候选人")
+    updated = update_candidate(
+        cid,
+        name=req.name,
+        expected_position=req.expected_position,
+        skills=req.skills,
+        experience=req.experience,
+        education=req.education,
+        phone=req.phone,
+        email=req.email,
+    )
+    vector_store.invalidate()  # 技能/岗位变化会影响向量，失效后重建
+    return {"candidate": updated}
+
+
+@app.delete("/api/candidates/{cid}")
+def api_delete_candidate(cid: int, username: str = Depends(current_user)):
+    """删除候选人及其关联推荐记录"""
+    if not get_candidate(cid):
+        raise HTTPException(status_code=404, detail="未找到该候选人")
+    delete_candidate(cid)
+    vector_store.invalidate()
+    return {"status": "ok"}
 
 
 @app.post("/api/candidates/upload")
@@ -127,13 +203,16 @@ async def upload_candidate(
             status_code=400,
             detail="无法解析该文件，请上传 PDF 或 Word（.docx）格式的简历",
         )
-    # 取解析文本前 10 行作为简要技能/经历预览，正文全文存 resume_text
+    # 取解析文本前 200 字作为简要技能/经历预览，正文全文存 resume_text
     skills_preview = text[:200]
+    contact = extract_contact(text)
     cid = insert_candidate(
         name=name,
         expected_position=expected_position,
         skills=skills_preview,
         resume_text=text,
+        phone=contact["phone"],
+        email=contact["email"],
     )
     vector_store.invalidate()  # 新增简历后失效向量索引，下次查询重建
     return {"candidate": get_candidate(cid)}

@@ -28,8 +28,26 @@ export const api = {
   chat: (message) =>
     request('/api/chat', { method: 'POST', body: JSON.stringify({ message }) }),
   chatReset: () => request('/api/chat/reset', { method: 'POST' }),
-  candidates: () => request('/api/candidates'),
+  candidates: (params) => {
+    const qs = new URLSearchParams()
+    if (params) {
+      for (const k in params) {
+        if (params[k] !== '' && params[k] != null) qs.append(k, params[k])
+      }
+    }
+    const q = qs.toString()
+    return request('/api/candidates' + (q ? '?' + q : ''))
+  },
   candidate: (id) => request('/api/candidates/' + id),
+  updateCandidate: (id, body) =>
+    request('/api/candidates/' + id, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteCandidate: (id) =>
+    request('/api/candidates/' + id, { method: 'DELETE' }),
+  updateCandidateStatus: (id, status) =>
+    request('/api/candidates/' + id + '/status', {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   recommendations: () => request('/api/recommendations'),
   uploadCandidate: (formData) =>
     request('/api/candidates/upload', { method: 'POST', body: formData }),

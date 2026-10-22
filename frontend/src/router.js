@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Login from './views/Login.vue'
 import Workbench from './views/Workbench.vue'
 import CandidateDetail from './views/CandidateDetail.vue'
+import Kanban from './views/Kanban.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -9,6 +10,7 @@ const router = createRouter({
     { path: '/login', component: Login },
     { path: '/', component: Workbench, meta: { requiresAuth: true } },
     { path: '/candidates/:id', component: CandidateDetail, meta: { requiresAuth: true } },
+    { path: '/kanban', component: Kanban, meta: { requiresAuth: true } },
   ],
 })
 

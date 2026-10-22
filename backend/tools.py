@@ -1,13 +1,17 @@
 """AI Agent 可调用的工具：简历语义检索与推荐（LangChain @tool 声明）"""
+import logging
 import threading
 
 from langchain_core.tools import tool
 
-from db import get_conn
+from db import add_recommendation, get_candidate, get_candidates_by_ids, list_candidates
 from embedding import embed, cosine_similarity
+from vector_store import candidate_text
 import vector_store
 
-# 技能关键词表，用于从自然语言需求中识别技能并与简历匹配（语义检索失败时的回退方案）
+logger = logging.getLogger(__name__)
+
+# 技能关键词表，用于从自然语言需求中识别技能并与简历匹配（语义检索失败时的回退/融合方案）
 SKILL_KEYWORDS = [
     "python", "java", "react", "vue", "typescript", "javascript", "node",
     "fastapi", "springboot", "mysql", "redis", "sql",
@@ -20,15 +24,6 @@ _EMB_CACHE = {}
 _cache_lock = threading.Lock()
 
 
-def _candidate_text(row):
-    """把一个候选人拼成一段用于向量化的文本"""
-    return " ".join(filter(None, [
-        row.get("expected_position") or "",
-        row.get("skills") or "",
-        row.get("resume_text") or "",
-    ]))
-
-
 def _get_candidate_vectors(rows):
     """批量获取候选人的向量（带内存缓存），返回 {id: vector}"""
     result = {}
@@ -39,7 +34,7 @@ def _get_candidate_vectors(rows):
         else:
             pending.append(r)
     if pending:
-        vectors = embed([_candidate_text(r) for r in pending])
+        vectors = embed([candidate_text(r) for r in pending])
         with _cache_lock:
             for r, v in zip(pending, vectors):
                 _EMB_CACHE[r["id"]] = v
@@ -47,25 +42,46 @@ def _get_candidate_vectors(rows):
     return result
 
 
-def _match_score(row, requirement):
-    """按技能关键词命中情况打分（0~100），语义检索不可用时的回退"""
-    text = " ".join([
+def _demanded_keywords(requirement):
+    """从需求描述里识别命中的技能关键词（小写，去重保序）"""
+    req = (requirement or "").lower()
+    seen = set()
+    out = []
+    for kw in SKILL_KEYWORDS:
+        k = kw.lower()
+        if k in req and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def _candidate_fields_text(row):
+    """拼接候选人的可匹配字段（技能+岗位+正文），用于关键词命中判断"""
+    return " ".join([
         row.get("skills") or "",
         row.get("expected_position") or "",
         row.get("resume_text") or "",
-    ]).lower()
-    req = (requirement or "").lower()
-    demanded = [kw for kw in SKILL_KEYWORDS if kw.lower() in req]
+    ])
+
+
+def _keyword_score(row, demanded):
+    """基于技能关键词命中比例打分（0~100）；无明确需求词时返回中性 50"""
     if not demanded:
-        return 60
-    hits = sum(1 for kw in demanded if kw.lower() in text)
+        return 50
+    text = _candidate_fields_text(row).lower()
+    hits = sum(1 for kw in demanded if kw in text)
     if hits == 0:
         return 0
-    return round(60 + (hits / len(demanded)) * 40)
+    return round((hits / len(demanded)) * 100)
+
+
+def _match_score(row, requirement):
+    """关键词打分（兼容旧逻辑入口）"""
+    return _keyword_score(row, _demanded_keywords(requirement))
 
 
 def _semantic_scores(rows, requirement):
-    """用向量化 + 余弦相似度打分，返回 {id: score}；失败返回 None"""
+    """用向量化 + 余弦相似度打分，返回 {id: score}；失败返回 None 并记录日志"""
     try:
         q_vec = embed([requirement])[0]
         vecs = _get_candidate_vectors(rows)
@@ -74,18 +90,44 @@ def _semantic_scores(rows, requirement):
             for r in rows
         }
     except Exception:
+        logger.exception("语义检索失败，回退关键词打分")
         return None
 
 
+def _hybrid_scores(rows, requirement):
+    """语义 + 关键词混合打分：语义为主（0.6）、关键词为辅（0.4）加权融合"""
+    sem = _semantic_scores(rows, requirement)
+    demanded = _demanded_keywords(requirement)
+    if sem is None:
+        return {r["id"]: _keyword_score(r, demanded) for r in rows}
+    if not demanded:
+        return sem  # 无技能关键词时退化为纯语义，避免中性分干扰排序
+    return {
+        r["id"]: round(0.6 * sem[r["id"]] + 0.4 * _keyword_score(r, demanded))
+        for r in rows
+    }
+
+
 def _score_single(row, requirement):
-    """给单个候选人打分：优先语义，回退关键词"""
-    sem = _semantic_scores([row], requirement)
-    if sem is not None:
-        return sem[row["id"]]
-    return _match_score(row, requirement)
+    """给单个候选人打分（混合）"""
+    return _hybrid_scores([row], requirement).get(row["id"], 0)
 
 
-def _to_result(row, score):
+def _match_reason(row, demanded):
+    """生成推荐理由：命中了哪些技能关键词、候选人的意向岗位"""
+    text = _candidate_fields_text(row).lower()
+    hits = [kw for kw in demanded if kw in text]
+    parts = []
+    if hits:
+        parts.append("命中技能：" + "、".join(hits))
+    if row.get("expected_position"):
+        parts.append("意向岗位：" + row["expected_position"])
+    if not parts:
+        parts.append("语义综合匹配")
+    return "；".join(parts)
+
+
+def _to_result(row, score, demanded):
     return {
         "id": row["id"],
         "name": row["name"],
@@ -94,16 +136,9 @@ def _to_result(row, score):
         "experience": row["experience"],
         "education": row["education"],
         "match_score": score,
+        "matched_skills": [kw for kw in demanded if kw in _candidate_fields_text(row).lower()],
+        "match_reason": _match_reason(row, demanded),
     }
-
-
-def _fetch_all_candidates():
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM candidates")
-        rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 @tool
@@ -114,38 +149,30 @@ def search_candidates(requirement: str, limit: int = 5) -> list:
         requirement: 招聘需求描述，例如目标岗位或要求技能。
         limit: 最多返回人数，默认 5。
     """
-    # 优先用 FAISS 向量索引检索（O(log N)），失败或召回为空时回退暴力语义/关键词
+    demanded = _demanded_keywords(requirement)
+    # 优先用 FAISS 向量索引检索（O(log N)），失败或召回为空时回退混合检索
     try:
         hits = vector_store.search(requirement, top_k=limit)
     except Exception:
+        logger.exception("FAISS 检索失败，回退全量混合检索")
         hits = None
 
     if hits:
-        conn = get_conn()
-        with conn.cursor() as cur:
-            ids = [h[0] for h in hits]
-            placeholders = ",".join(["%s"] * len(ids))
-            cur.execute(
-                f"SELECT * FROM candidates WHERE id IN ({placeholders})", ids
-            )
-            rows = cur.fetchall()
-        conn.close()
+        ids = [h[0] for h in hits]
+        rows = get_candidates_by_ids(ids)
         by_id = {r["id"]: r for r in rows}
-        results = [_to_result(by_id[cid], score) for cid, score in hits if cid in by_id]
+        results = [_to_result(by_id[cid], score, demanded) for cid, score in hits if cid in by_id]
         if results:
             return results
 
-    rows = _fetch_all_candidates()
+    rows = list_candidates()
     if not rows:
         return []
 
-    scores = _semantic_scores(rows, requirement)
-    if scores is None:  # 语义检索失败，回退关键词
-        scores = {r["id"]: _match_score(r, requirement) for r in rows}
-
+    scores = _hybrid_scores(rows, requirement)
     scored = [(r, scores.get(r["id"], 0)) for r in rows if scores.get(r["id"], 0) > 0]
     scored.sort(key=lambda x: x[1], reverse=True)
-    return [_to_result(r, s) for r, s in scored[:limit]]
+    return [_to_result(r, s, demanded) for r, s in scored[:limit]]
 
 
 @tool
@@ -156,22 +183,11 @@ def recommend_candidate(candidate_id: int, requirement: str) -> str:
         candidate_id: 候选人 id。
         requirement: 本次招聘需求描述。
     """
-    conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT * FROM candidates WHERE id=%s", (candidate_id,))
-        c = cur.fetchone()
-        if not c:
-            conn.close()
-            return "未找到该候选人"
-        score = _score_single(c, requirement)
-        cur.execute(
-            """
-            INSERT INTO recommendations (candidate_id, candidate_name, requirement, match_score)
-            VALUES (%s,%s,%s,%s)
-            """,
-            (c["id"], c["name"], requirement, score),
-        )
-    conn.close()
+    c = get_candidate(candidate_id)
+    if not c:
+        return "未找到该候选人"
+    score = _score_single(c, requirement)
+    add_recommendation(c["id"], c["name"], requirement, score)
     return f"已将 {c['name']}（匹配度 {score}%）推荐给面试官，可进入简历详情查看"
 
 

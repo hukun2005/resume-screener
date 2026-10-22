@@ -3,6 +3,7 @@
     <header class="topbar">
       <span class="brand">AI 简历筛选助手</span>
       <div class="user">
+        <button class="btn btn-ghost" @click="$router.push('/kanban')">候选人看板</button>
         <span>{{ username }}</span>
         <button class="btn btn-ghost" @click="logout">退出登录</button>
       </div>
@@ -41,6 +42,14 @@
               </button>
             </div>
             <p v-if="upMsg" class="up-msg">{{ upMsg }}</p>
+            <div class="filter-box">
+              <input v-model="filter.position" class="up-input" placeholder="岗位（如 前端）" />
+              <input v-model="filter.skills" class="up-input" placeholder="技能（如 Vue）" />
+              <input v-model="filter.education" class="up-input" placeholder="学历（如 本科）" />
+              <input v-model.number="filter.minYears" type="number" class="up-input" placeholder="最低年限（如 3）" />
+              <button class="btn" @click="applyFilter">筛选</button>
+              <button class="btn btn-ghost" @click="resetFilter">重置</button>
+            </div>
             <CandidateCard
               v-for="c in allCandidates"
               :key="c.id"
@@ -82,6 +91,7 @@ const upPosition = ref('')
 const upFile = ref(null)
 const uploading = ref(false)
 const upMsg = ref('')
+const filter = ref({ position: '', skills: '', education: '', minYears: '' })
 
 function onFile(e) {
   upFile.value = e.target.files[0] || null
@@ -126,8 +136,22 @@ function onResult(toolTrace) {
 }
 
 async function loadAll() {
-  const data = await api.candidates()
+  const data = await api.candidates({
+    position: filter.value.position,
+    skills: filter.value.skills,
+    education: filter.value.education,
+    min_years: filter.value.minYears,
+  })
   allCandidates.value = data.candidates
+}
+
+function applyFilter() {
+  loadAll()
+}
+
+function resetFilter() {
+  filter.value = { position: '', skills: '', education: '', minYears: '' }
+  loadAll()
 }
 
 async function loadRecommendations() {
@@ -199,6 +223,16 @@ onMounted(() => {
   padding: 12px 16px;
   border-bottom: 1px solid #f0f1f6;
   align-items: center;
+}
+
+.filter-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f1f6;
+  align-items: center;
+  background: #fafbfd;
 }
 
 .up-input {

@@ -1,4 +1,5 @@
 """基于 FAISS 的简历向量索引与语义检索（替代 O(N) 暴力余弦相似度）"""
+import logging
 import threading
 
 import numpy as np
@@ -7,19 +8,21 @@ import faiss
 from db import list_candidates
 from embedding import embed
 
+logger = logging.getLogger(__name__)
+
 # 进程级缓存：FAISS 索引 + 与索引中向量一一对应的候选人 id
 _cache_lock = threading.Lock()
 _index = None      # faiss.IndexFlatIP 实例
 _index_ids = []    # 索引中第 i 个向量对应的 candidate id
 
 
-def _candidate_text(row):
-    """把一个候选人拼成一段用于向量化的文本"""
-    return " ".join(filter(None, [
-        row.get("expected_position") or "",
-        row.get("skills") or "",
-        row.get("resume_text") or "",
-    ]))
+def candidate_text(row):
+    """把候选人拼成用于向量化的文本；岗位与技能字段重复以加重权重，
+    避免被较长的简历正文稀释关键信息（与 tools.py 共享同一表示）"""
+    pos = row.get("expected_position") or ""
+    skills = row.get("skills") or ""
+    body = row.get("resume_text") or ""
+    return " ".join(filter(None, [pos, pos, skills, skills, skills, body]))
 
 
 def _to_unit(v):
@@ -36,7 +39,7 @@ def _build(rows):
     """根据候选人简历批量建索引，返回 (index, ids)"""
     if not rows:
         return None, []
-    texts = [_candidate_text(r) for r in rows]
+    texts = [candidate_text(r) for r in rows]
     vectors = [_to_unit(v) for v in embed(texts)]
     dim = vectors[0].shape[0]
     if len(vectors) >= HNSW_THRESHOLD:
@@ -55,6 +58,7 @@ def get_index(force=False):
     global _index, _index_ids
     with _cache_lock:
         if _index is None or force:
+            logger.info("重建 FAISS 索引（force=%s）", force)
             rows = list_candidates()
             _index, _index_ids = _build(rows)
         return _index, _index_ids

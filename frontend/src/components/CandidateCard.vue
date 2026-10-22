@@ -6,6 +6,7 @@
     </div>
     <p class="pos">{{ c.expected_position }}</p>
     <p class="skills">{{ c.skills }}</p>
+    <p v-if="c.match_reason" class="reason">{{ c.match_reason }}</p>
     <p class="exp">{{ c.experience }}</p>
   </div>
 </template>
@@ -56,6 +57,16 @@ defineEmits(['click'])
 .skills {
   color: #666;
   font-size: 13px;
+}
+
+.reason {
+  color: #1a6fe0;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #eef4ff;
+  border-radius: 6px;
 }
 
 .exp {
