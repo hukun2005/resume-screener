@@ -2,6 +2,12 @@ function token() {
   return localStorage.getItem('token')
 }
 
+function clearSession() {
+  for (const k of ['token', 'username', 'display_name', 'role']) {
+    localStorage.removeItem(k)
+  }
+}
+
 async function request(path, options = {}) {
   const headers = {
     ...(token() ? { Authorization: 'Bearer ' + token() } : {}),
@@ -13,7 +19,7 @@ async function request(path, options = {}) {
   }
   const res = await fetch(path, { ...options, headers })
   if (res.status === 401) {
-    localStorage.removeItem('token')
+    clearSession()
     window.location.href = '/login'
     throw new Error('登录已过期，请重新登录')
   }
@@ -25,6 +31,29 @@ async function request(path, options = {}) {
 export const api = {
   login: (username, password) =>
     request('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  me: () => request('/api/me'),
+  logout: () => request('/api/logout', { method: 'POST' }),
+  users: () => request('/api/users'),
+  createUser: (body) =>
+    request('/api/users', { method: 'POST', body: JSON.stringify(body) }),
+  updateUser: (id, body) =>
+    request('/api/users/' + id, { method: 'PATCH', body: JSON.stringify(body) }),
+  rolePermissions: () => request('/api/roles/permissions'),
+  saveRolePermissions: (role, permissions) =>
+    request('/api/roles/' + role + '/permissions', {
+      method: 'PUT',
+      body: JSON.stringify({ permissions }),
+    }),
+  auditLogs: (params) => {
+    const qs = new URLSearchParams()
+    if (params) {
+      for (const k in params) {
+        if (params[k]) qs.append(k, params[k])
+      }
+    }
+    const q = qs.toString()
+    return request('/api/audit/logs' + (q ? '?' + q : ''))
+  },
   chat: (message) =>
     request('/api/chat', { method: 'POST', body: JSON.stringify({ message }) }),
   chatReset: () => request('/api/chat/reset', { method: 'POST' }),
@@ -39,8 +68,6 @@ export const api = {
     return request('/api/candidates' + (q ? '?' + q : ''))
   },
   candidate: (id) => request('/api/candidates/' + id),
-  updateCandidate: (id, body) =>
-    request('/api/candidates/' + id, { method: 'PUT', body: JSON.stringify(body) }),
   deleteCandidate: (id) =>
     request('/api/candidates/' + id, { method: 'DELETE' }),
   updateCandidateStatus: (id, status) =>
@@ -48,13 +75,25 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     }),
+  updateInterview: (id, body) =>
+    request('/api/candidates/' + id + '/interview', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   recommendations: () => request('/api/recommendations'),
   uploadCandidate: (formData) =>
     request('/api/candidates/upload', { method: 'POST', body: formData }),
+  syncEmail: () => request('/api/ingest/email/run', { method: 'POST' }),
+  emailStatus: () => request('/api/ingest/email/status'),
+  emailConfig: () => request('/api/ingest/email/config'),
+  saveEmailConfig: (body) =>
+    request('/api/ingest/email/config', { method: 'PUT', body: JSON.stringify(body) }),
+  testEmailConfig: (body) =>
+    request('/api/ingest/email/test', { method: 'POST', body: JSON.stringify(body) }),
 }
 
 // SSE 流式对话：读到文本片段回调 onDelta，读到工具调用回调 onTrace
-export async function chatStream(message, { onDelta, onTrace } = {}) {
+export async function chatStream(message, { onDelta, onTrace, signal } = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...(token() ? { Authorization: 'Bearer ' + token() } : {}),
@@ -63,9 +102,10 @@ export async function chatStream(message, { onDelta, onTrace } = {}) {
     method: 'POST',
     headers,
     body: JSON.stringify({ message }),
+    signal,
   })
   if (res.status === 401) {
-    localStorage.removeItem('token')
+    clearSession()
     window.location.href = '/login'
     throw new Error('登录已过期，请重新登录')
   }

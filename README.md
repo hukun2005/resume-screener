@@ -94,6 +94,20 @@ npm run dev   # 默认 http://localhost:5173
 | `MYSQL_HOST` / `MYSQL_PORT` | MySQL 连接信息 |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | MySQL 账号密码 |
 | `MYSQL_DB` | 数据库名，默认 `resume_screener` |
+| `IMAP_HOST` / `IMAP_PORT` | 收简历的 IMAP 服务器（如 `imap.qq.com:993`），留空则关闭邮箱收件 |
+| `IMAP_USER` / `IMAP_PASSWORD` | 邮箱账号与 IMAP 授权码（不是登录密码） |
+| `IMAP_SEARCH_DAYS` | 每次同步回溯的邮件天数，默认 7 |
+| `IMAP_POLL_INTERVAL` | 定时同步间隔（秒），默认 300，设为 0 只允许手动触发 |
+
+## 📮 邮箱收件（接入主流招聘平台）
+
+招聘平台的「简历转发到邮箱」都会把简历作为 PDF/Word 附件发到 HR 邮箱，因此无需平台 API 授权：
+
+1. 在 `.env` 填好 `IMAP_*` 配置，启动后端即自动开始定时同步；
+2. 也可随时手动触发：`POST /api/ingest/email/run`；
+3. 查看同步状态与处理明细：`GET /api/ingest/email/status`、`GET /api/ingest/email/log`。
+
+入库时按手机号 / 邮箱查重，同一封邮件的同一附件只处理一次（`email_ingest_log` 表保证幂等）。
 
 ## 👤 默认演示账号
 
